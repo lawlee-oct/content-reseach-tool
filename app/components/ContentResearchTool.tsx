@@ -1,14 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useState } from "react";
 import Image from "next/image";
-import BrandCard from "./BrandCard";
+import CompetitorResultCard from "./CompetitorResultCard";
+import BrandInsightCard from "./BrandInsightCard";
 import {
   allPlatforms,
-  demoData,
   platformConfig,
   type PlatformKey,
-} from "../constants/demoData";
+} from "../constants/platforms";
+import type { ResearchResponse } from "../lib/research/types";
 
 type Mode = "niche" | "brand" | "url";
 
@@ -53,21 +54,8 @@ const tabs: Array<{
   },
 ];
 
-const progressSteps = [
-  { pct: 10, message: "🔍 Bắt đầu phân tích..." },
-  { pct: 22, message: "🔍 Tìm thấy brands phù hợp..." },
-  { pct: 38, message: "📊 Đang lấy dữ liệu SEO..." },
-  { pct: 54, message: "📱 Đang phân tích nội dung mạng xã hội..." },
-  { pct: 70, message: "🧠 AI đang đánh giá hiệu quả nội dung..." },
-  { pct: 88, message: "✅ Hoàn thành phân tích! Đang hiển thị kết quả..." },
-  {
-    pct: 100,
-    message: "✅ Done — 3 brands · 4 platforms · 12 content patterns",
-  },
-];
-
 const defaultInputValues: InputValues = {
-  niche: demoData.niche,
+  niche: "",
   brand: "",
   url: "",
 };
@@ -84,21 +72,14 @@ export default function ContentResearchTool() {
   ]);
   const [progress, setProgress] = useState(0);
   const [statusMessage, setStatusMessage] = useState(
-    "Nhập ngách hoặc brand để bắt đầu research.",
+    "Nhập ngách, brand, hoặc URL — pipeline sẽ tìm đối thủ, gom profile, rồi chấm điểm nội dung.",
   );
   const [isSearching, setIsSearching] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
-  const [loadedBrands, setLoadedBrands] = useState<typeof demoData.brands>([]);
-  const timeoutIds = useRef<number[]>([]);
-
-  const activeQuery = inputValues[currentMode] || demoData.niche;
-
-  const selectedPlatformConfigs = useMemo(
-    () => allPlatforms.filter((platform) => activePlatforms.includes(platform)),
-    [activePlatforms],
+  const [researchResult, setResearchResult] = useState<ResearchResponse | null>(
+    null,
   );
-
-  const displayedBrands = hasSearched ? loadedBrands : [];
+  const [researchError, setResearchError] = useState<string | null>(null);
 
   const handleModeChange = (mode: Mode) => setCurrentMode(mode);
 
@@ -114,82 +95,74 @@ export default function ContentResearchTool() {
     );
   };
 
-  const clearSearchTimers = () => {
-    timeoutIds.current.forEach((id) => window.clearTimeout(id));
-    timeoutIds.current = [];
-  };
-
-  useEffect(() => {
-    return () => {
-      clearSearchTimers();
-    };
-  }, []);
-
-  const runDemo = () => {
-    clearSearchTimers();
-    setHasSearched(true);
-    setProgress(0);
-    setStatusMessage(`🔍 Đang tìm kiếm brands trong ngách ${activeQuery}...`);
-    setIsSearching(true);
-    setLoadedBrands([]);
-
-    progressSteps.forEach((step, index) => {
-      timeoutIds.current.push(
-        window.setTimeout(
-          () => {
-            setProgress(step.pct);
-            setStatusMessage(step.message);
-
-            if (index === 1) {
-              setLoadedBrands([demoData.brands[0]]);
-            }
-
-            if (index === 2) {
-              setLoadedBrands([demoData.brands[0], demoData.brands[1]]);
-            }
-
-            if (index === 5) {
-              setLoadedBrands(demoData.brands);
-            }
-
-            if (index === progressSteps.length - 1) {
-              setIsSearching(false);
-            }
-          },
-          600 * (index + 1),
-        ),
-      );
-    });
-  };
-
-  // Helper for brand icon rendering
-  function renderBrandIcon(brand: (typeof demoData.brands)[number]) {
-    if (
-      brand.url &&
-      typeof brand.url === "string" &&
-      brand.url.startsWith("/")
-    ) {
-      return (
-        <Image
-          src={brand.url}
-          alt={`${brand.name} icon`}
-          width={36}
-          height={36}
-          className="object-contain w-9 h-9 bg-white rounded-lg border border-slate-200"
-          unoptimized
-        />
-      );
-    }
-    // fallback if icon is emoji or undefined
-    return (
-      <span className="text-2xl">{brand.url || brand.name.charAt(0)}</span>
-    );
-  }
-
-  // Format chosen platform names to show the user
   const chosenPlatformLabels = activePlatforms.map(
     (platform) => platformConfig[platform]?.label,
   );
+
+  const canSubmit =
+    activePlatforms.length > 0 &&
+    (currentMode === "niche"
+      ? Boolean(inputValues.niche.trim())
+      : currentMode === "brand"
+        ? Boolean(inputValues.brand.trim())
+        : Boolean(inputValues.url.trim()));
+
+  const runResearch = async () => {
+    if (!canSubmit) return;
+
+    setResearchError(null);
+    setResearchResult(null);
+    setHasSearched(true);
+    setIsSearching(true);
+    setProgress(6);
+    setStatusMessage("🔍 Đang chạy pipeline discovery + scoring…");
+
+    const tick = window.setInterval(() => {
+      setProgress((p) => (p >= 92 ? 92 : p + 5));
+    }, 420);
+
+    const value = inputValues[currentMode].trim();
+
+    try {
+      const res = await fetch("/api/research", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: currentMode,
+          value,
+          platforms: activePlatforms,
+          locale: "en-US",
+          max_competitors: 4,
+        }),
+      });
+
+      const data = (await res.json()) as ResearchResponse & {
+        error?: string;
+        code?: string;
+      };
+
+      if (!res.ok) {
+        throw new Error(
+          data.error ??
+            `Lỗi HTTP ${res.status}${data.code ? ` (${data.code})` : ""}`,
+        );
+      }
+
+      setResearchResult(data);
+      setStatusMessage(
+        `✅ Hoàn tất · ${data.summary.topic_insights_count} hot content · job ${data.research_job_id}`,
+      );
+      setProgress(100);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setResearchError(message);
+      setStatusMessage("Không thể hoàn tất research.");
+      setProgress(0);
+    } finally {
+      window.clearInterval(tick);
+      setIsSearching(false);
+    }
+  };
 
   return (
     <div className="relative z-10 mx-auto max-w-[960px] px-6 py-12 pb-20 text-slate-950">
@@ -220,9 +193,10 @@ export default function ContentResearchTool() {
           <br />
           in any niche
         </h1>
-        <p className="mx-auto mt-4 max-w-[480px] text-sm leading-7 text-slate-600">
-          Nhập ngách, brand, hoặc link sản phẩm — AI sẽ research và tìm ra
-          content hiệu quả nhất trên mọi nền tảng.
+        <p className="mx-auto mt-4 max-w-[520px] text-sm leading-7 text-slate-600">
+          Pipeline: <strong>ngách / brand / URL</strong> → tìm đối thủ & profile
+          đa nền tảng → extract & search discovery → chấm điểm nội dung → trả
+          list neo theo input.
         </p>
       </div>
 
@@ -288,8 +262,8 @@ export default function ContentResearchTool() {
                 <div className="mt-2 flex items-center gap-2 text-[12px] text-[#8888aa]">
                   <span>💡</span>
                   <span>
-                    AI sẽ tự crawl và extract thông tin sản phẩm, sau đó
-                    research content liên quan
+                    URL mode: server extract nội dung trang (Tavily) để suy ra
+                    query discovery tiếp theo.
                   </span>
                 </div>
               ) : null}
@@ -316,8 +290,7 @@ export default function ContentResearchTool() {
                   }`}
                   onClick={() => togglePlatform(platform)}
                 >
-                  {/* icon is emoji or path */}
-                  {"icon" in cfg && cfg.icon && cfg.icon.startsWith("/") ? (
+                  {cfg.iconType === "img" && cfg.icon.startsWith("/") ? (
                     <Image
                       src={cfg.icon}
                       alt={cfg.label}
@@ -326,6 +299,8 @@ export default function ContentResearchTool() {
                       className="object-contain w-4 h-4"
                       unoptimized
                     />
+                  ) : cfg.iconType === "text" && cfg.icon ? (
+                    <span className="text-[14px] leading-none">{cfg.icon}</span>
                   ) : (
                     <span
                       className="h-2.5 w-2.5 rounded-full"
@@ -339,12 +314,11 @@ export default function ContentResearchTool() {
           </div>
         </div>
 
-        {/* Thông báo các nền tảng đã được chọn */}
         <div className="mt-2 mb-2 flex items-center gap-2 text-xs">
           <span className="text-slate-400 font-semibold">Nền tảng đã chọn:</span>
           <span className="flex flex-wrap gap-1">
             {chosenPlatformLabels.length > 0 ? (
-              chosenPlatformLabels.map((label, idx) => (
+              chosenPlatformLabels.map((label) => (
                 <span
                   key={label}
                   className="rounded-full bg-[#eff6ff] border border-[#bfdbfe] px-2 py-0.5 text-[#2563eb] font-medium shadow-sm"
@@ -357,17 +331,17 @@ export default function ContentResearchTool() {
             )}
           </span>
         </div>
-   
 
         <div className="mt-6 flex flex-col gap-4 border-t border-slate-200 pt-5 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2 text-[12px] text-[#8888aa]">
             <span className="h-1.5 w-1.5 rounded-full bg-[#00d4aa] animate-pulse" />
-            <span>~1–2 phút · ~$0.35/research</span>
+            <span>Live: Tavily Search + Extract — bắt buộc có TAVILY_API_KEY</span>
           </div>
           <button
-            className="inline-flex items-center gap-2 rounded-[12px] bg-gradient-to-br from-[#6c63ff] to-[#ff6b9d] px-7 py-3 text-sm font-semibold text-white transition hover:shadow-[0_8px_24px_rgba(108,99,255,0.4)]"
+            className="inline-flex items-center gap-2 rounded-[12px] bg-gradient-to-br from-[#6c63ff] to-[#ff6b9d] px-7 py-3 text-sm font-semibold text-white transition hover:shadow-[0_8px_24px_rgba(108,99,255,0.4)] disabled:opacity-40 disabled:pointer-events-none"
             type="button"
-            onClick={runDemo}
+            disabled={!canSubmit || isSearching}
+            onClick={runResearch}
           >
             Research Now <span className="text-lg">→</span>
           </button>
@@ -377,7 +351,7 @@ export default function ContentResearchTool() {
       <div className="mt-8 flex flex-col gap-4">
         {isSearching ? (
           <div className="flex items-center gap-3 rounded-[12px] border border-slate-200 bg-white px-4 py-4 text-sm text-slate-500 shadow-sm">
-            <span className="min-w-[120px]">{statusMessage}</span>
+            <span className="min-w-[120px] flex-1">{statusMessage}</span>
             <div className="flex-1 overflow-hidden rounded-full bg-slate-100">
               <div
                 className="h-1.5 rounded-full bg-gradient-to-r from-[#2563eb] to-[#14b8a6] transition-all"
@@ -390,34 +364,153 @@ export default function ContentResearchTool() {
           </div>
         ) : null}
 
+        {researchError ? (
+          <div className="rounded-[12px] border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+            {researchError}
+          </div>
+        ) : null}
+
         {!isSearching && !hasSearched ? (
           <div className="rounded-[16px] bg-slate-50 px-6 py-12 text-center text-slate-500">
             <div className="text-4xl opacity-30">🔭</div>
             <p className="mt-3 text-sm leading-7">
-              Nhập ngách hoặc brand để bắt đầu research.
+              Chọn mode, nhập dữ liệu, bấm Research Now.
               <br />
-              AI sẽ tìm content hiệu quả nhất trên mọi nền tảng.
+              Kết quả: <strong>brand → social → hot content</strong> (metric: snippet / suy
+              luận). Raw Tavily nằm trong phần gập bên dưới.
             </p>
           </div>
         ) : null}
 
-        {(hasSearched || isSearching) &&
-          displayedBrands.map((brand, index) => (
-            <BrandCard
-              key={brand.name}
-              brand={{
-                ...brand,
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                url: renderBrandIcon(brand) as any, // pass down element as icon if needed
-              }}
-              activePlatforms={selectedPlatformConfigs}
-              defaultOpen={index === 0}
-            />
-          ))}
+        {researchResult ? (
+          <>
+            <div className="rounded-[16px] border border-slate-200 bg-white p-5 shadow-sm space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-sm font-[700] text-slate-950">
+                  Job summary
+                </div>
+                <div className="text-[11px] font-[var(--font-mono)] text-slate-500">
+                  {researchResult.research_job_id} · mode{" "}
+                  <span className="text-slate-700">{researchResult.input.mode}</span>
+                </div>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
+                <div className="rounded-[10px] border border-slate-100 bg-slate-50 px-3 py-2">
+                  <div className="text-[10px] uppercase tracking-[0.12em] text-slate-500">
+                    Brands
+                  </div>
+                  <div className="text-lg font-[800] text-slate-950">
+                    {researchResult.summary.competitors_found}
+                  </div>
+                </div>
+                <div className="rounded-[10px] border border-slate-100 bg-slate-50 px-3 py-2">
+                  <div className="text-[10px] uppercase tracking-[0.12em] text-slate-500">
+                    Raw findings
+                  </div>
+                  <div className="text-lg font-[800] text-slate-950">
+                    {researchResult.summary.content_items_analyzed}
+                  </div>
+                </div>
+                <div className="rounded-[10px] border border-slate-100 bg-slate-50 px-3 py-2">
+                  <div className="text-[10px] uppercase tracking-[0.12em] text-slate-500">
+                    Hot content
+                  </div>
+                  <div className="text-lg font-[800] text-slate-950">
+                    {researchResult.summary.topic_insights_count}
+                  </div>
+                </div>
+                <div className="rounded-[10px] border border-slate-100 bg-slate-50 px-3 py-2">
+                  <div className="text-[10px] uppercase tracking-[0.12em] text-slate-500">
+                    Tổng hợp
+                  </div>
+                  <div className="text-lg font-[800] text-slate-950 capitalize">
+                    {researchResult.summary.synthesis_method === "llm"
+                      ? "LLM"
+                      : "Heuristic"}
+                  </div>
+                </div>
+              </div>
+              <ul className="list-disc pl-5 text-xs text-slate-600 space-y-1">
+                {researchResult.summary.notes.map((note, idx) => (
+                  <li key={idx}>{note}</li>
+                ))}
+              </ul>
+            </div>
 
-        {isSearching &&
+            <div className="rounded-[16px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="text-sm font-[700] text-slate-950 mb-3">
+                Brand → social → hot content (score 0–100, evidence URL)
+              </div>
+              <div className="flex flex-col gap-4">
+                {researchResult.brands.map((brand, index) => (
+                  <BrandInsightCard
+                    key={brand.brand_id}
+                    brand={brand}
+                    defaultOpen={index === 0}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <details className="group rounded-[16px] border border-slate-200 bg-slate-50/80 shadow-sm">
+              <summary className="cursor-pointer select-none px-5 py-3 text-sm font-[600] text-slate-700 hover:bg-slate-100 rounded-[16px]">
+                Raw Tavily (scores) — gập mặc định
+              </summary>
+              <div className="border-t border-slate-200 px-5 pb-5 pt-4 space-y-4">
+                {researchResult.aggregate_top_content_for_niche.length > 0 ? (
+                  <div>
+                    <div className="text-xs font-[700] text-slate-600 mb-2">
+                      Top theo điểm heuristic (SERP)
+                    </div>
+                    <div className="space-y-2">
+                      {researchResult.aggregate_top_content_for_niche.map((row) => (
+                        <div
+                          key={`${row.rank}-${row.url}`}
+                          className="flex flex-wrap items-start gap-3 rounded-[10px] border border-slate-100 bg-white px-3 py-2 text-sm"
+                        >
+                          <div className="font-[var(--font-mono)] text-xs text-slate-500 pt-0.5">
+                            #{row.rank}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <a
+                              href={row.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="font-medium text-slate-950 hover:text-[#2563eb]"
+                            >
+                              {row.title}
+                            </a>
+                            <div className="text-[11px] text-slate-500 mt-1">
+                              {row.competitor_name} · {row.platform} · score{" "}
+                              {row.score}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                {researchResult.competitors.map((competitor) => (
+                  <CompetitorResultCard
+                    key={competitor.competitor_id}
+                    competitor={competitor}
+                    activePlatforms={activePlatforms}
+                    defaultOpen={false}
+                  />
+                ))}
+              </div>
+            </details>
+          </>
+        ) : null}
+
+        {isSearching ? (
           Array.from(
-            { length: Math.max(0, 3 - displayedBrands.length) },
+            {
+              length: Math.max(
+                0,
+                3 - (researchResult?.brands?.length ?? 0),
+              ),
+            },
             (_, index) => (
               <div
                 key={`skeleton-${index}`}
@@ -437,7 +530,8 @@ export default function ContentResearchTool() {
                 </div>
               </div>
             ),
-          )}
+          )
+        ) : null}
       </div>
     </div>
   );
