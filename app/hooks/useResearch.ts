@@ -3,7 +3,7 @@
 
 'use client'
 
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { ResearchInput, JobProgress, FinalReport } from '../types'
 
 export type ResearchState = {
@@ -27,6 +27,20 @@ const initialState: ResearchState = {
 export function useResearch() {
   const [state, setState] = useState<ResearchState>(initialState)
   const eventSourceRef = useRef<EventSource | null>(null)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      if (eventSourceRef.current) {
+        try {
+          eventSourceRef.current.close()
+        } catch {}
+        eventSourceRef.current = null
+      }
+    }
+  }, [])
 
   const startResearch = useCallback(async (input: ResearchInput) => {
     // Reset state
@@ -62,11 +76,13 @@ export function useResearch() {
         if (payload.type === 'ping') return
 
         if (payload.type === 'error') {
-          setState(prev => ({
-            ...prev,
-            status: 'error',
-            error: payload.error,
-          }))
+          if (mountedRef.current) {
+            setState(prev => ({
+              ...prev,
+              status: 'error',
+              error: payload.error,
+            }))
+          }
           es.close()
           return
         }
@@ -74,17 +90,19 @@ export function useResearch() {
         if (payload.type === 'progress') {
           const progress = payload as JobProgress & { type: string }
 
-          setState(prev => ({
-            ...prev,
-            status: progress.status === 'done' ? 'done'
-              : progress.status === 'error' ? 'error'
-              : 'running',
-            progress: progress.progress,
-            step: progress.step,
-            message: progress.message,
-            report: progress.data?.finalReport ?? prev.report,
-            error: progress.error ?? null,
-          }))
+          if (mountedRef.current) {
+            setState(prev => ({
+              ...prev,
+              status: progress.status === 'done' ? 'done'
+                : progress.status === 'error' ? 'error'
+                : 'running',
+              progress: progress.progress,
+              step: progress.step,
+              message: progress.message,
+              report: progress.data?.finalReport ?? prev.report,
+              error: progress.error ?? null,
+            }))
+          }
 
           if (progress.status === 'done' || progress.status === 'error') {
             es.close()
@@ -93,20 +111,24 @@ export function useResearch() {
       }
 
       es.onerror = () => {
-        setState(prev => ({
-          ...prev,
-          status: 'error',
-          error: 'Mất kết nối với server. Thử lại.',
-        }))
+        if (mountedRef.current) {
+          setState(prev => ({
+            ...prev,
+            status: 'error',
+            error: 'Mất kết nối với server. Thử lại.',
+          }))
+        }
         es.close()
       }
 
     } catch (err) {
-      setState(prev => ({
-        ...prev,
-        status: 'error',
-        error: err instanceof Error ? err.message : 'Lỗi không xác định',
-      }))
+      if (mountedRef.current) {
+        setState(prev => ({
+          ...prev,
+          status: 'error',
+          error: err instanceof Error ? err.message : 'Lỗi không xác định',
+        }))
+      }
     }
   }, [])
 
