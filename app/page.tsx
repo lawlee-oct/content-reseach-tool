@@ -1,5 +1,5 @@
-import ContentResearchTool from "./components/ContentResearchTool";
+import BlogResearcher from "./components/BlogResearcher";
 
 export default function Home() {
-  return <ContentResearchTool />;
+  return <BlogResearcher />;
 }
